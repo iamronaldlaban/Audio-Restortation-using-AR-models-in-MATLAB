@@ -1,0 +1,169 @@
+clc
+clear 
+close all
+tic
+% Model Order
+model_order = 3;
+
+% Threshold Point
+threshold_pt = 0.3;
+
+% Frame Duration
+frame_duration = 0.5; 
+
+% Read the clean input wav file
+[input, Fs] = audioread("input.wav");
+
+%To make the audio 10 sec long 
+% input = input(1 : 10 * Fs);
+
+% Selecting only one channel 
+% As both the channel have the same value
+
+input = input(:, 1);
+shg, figure (1), subplot(3, 1, 1), plot(input), ...
+    xlabel('No. of samples'), ylabel ('Amplitude'), ...
+    title('Input Signal with Silence')
+N_original = length (input);
+t_original = (0: N_original - 1) / Fs;
+duration_orginal = N_original / Fs;
+
+
+% Playing input for 10 sec with a sample rate of 44KHz
+
+myclean = input(1 : 10 * Fs);
+audiowrite('myclean.wav', myclean, Fs);
+
+% Breaking the audio signal into frames
+frame_size = round(frame_duration * Fs);
+num_frames = floor(N_original / frame_size);
+frame_si = zeros(num_frames, frame_size);
+temp = 0;
+for i = 1 : num_frames
+    frame_si(i, :) = input( temp + 1 : temp + frame_size);
+    temp = temp + frame_size;
+end
+
+% Silence removal on the basis of maximum value
+m_amp = abs(max(frame_si, [], 2));
+id = find(m_amp > 0.01);
+frame = frame_si(id, :);
+
+% Concatinating the frames without silence
+input_ws = reshape(frame', 1, [] );
+input_ws = input_ws';
+subplot(3, 1, 2), plot(input_ws), xlabel('No. of samples'), ...
+    ylabel ('Amplitude'), title('Input Signal without Silence')
+% inputplay_2 = input_ws(1 : 10 * Fs);
+% sound(inputplay_2, Fs)
+
+% Artifically degrading the input signal
+
+numNoiseElements = 100;% Number of points to be corrupted
+
+% Chosing Random Indexes
+noiseIndexes = randperm(length(input_ws), numNoiseElements);
+
+% Modifying the amplitude of random indexes to +1 or -1
+input_deg = input_ws;
+for i = 1: length(noiseIndexes)
+    input_deg(noiseIndexes (i)) = (( - 1) ^ randi([ - 1 1], 1));
+end
+inputplay_2 = input_deg(1 : 10 * Fs);
+audiowrite('degraded.wav', inputplay_2, Fs);
+
+subplot(3, 1, 3), plot(input_deg), xlabel('No. of samples'), ...
+    ylabel ('Amplitude'), ...
+    title('Input Signal without Silence and with degradation')
+
+% inputplay_3 = input_deg(1 : 10 * Fs);
+% sound(inputplay_3, Fs)
+
+% Breaking the audio signal into frames
+% The above frames are without silence
+N = length (input_deg);
+t = (0: N - 1) / Fs;
+duration = N / Fs;
+num_frames = floor(N / frame_size);
+temp = 0;
+data_block = zeros(num_frames, frame_size);
+for i = 1 : num_frames
+    data_block(i, :) = input_deg( temp + 1 : temp + frame_size);
+    temp = temp + frame_size;
+end
+
+% Find the AR coefficient 
+% ar_frame = zeros(num_frames, frame_size);
+% Creating Overlapping Frames
+for i = 1 : num_frames
+    if i == 1
+        ar_frame(i, :) = data_block(i, :);  
+    else
+        ar_frame(i, :) = [data_block(i - 1, end - model_order + 1 : end)...
+            data_block(i, 1 : end - model_order) ];
+    end
+    % Function to calculate AR coefficients for every frame
+%     coeffs = zeros(num_frames, model_order);
+    [coeffs(i, :)] = estimateARcoeffs(ar_frame(i, :), model_order);
+end
+
+% Find the Residual for every frame
+% res = zeros(num_frames, frame_size);
+for i = 1 : num_frames
+    res(i, :) = getResidual(data_block(i, :), coeffs(i, :));
+end
+residue = transpose(reshape(res', 1, [] ));
+figure(2), 
+subplot(2, 1, 1), plot(input_deg), xlabel('No. of samples'), ...
+    ylabel ('Amplitude'), ...
+    title('Input Signal without Silence and with degradation')
+subplot(2, 1, 2), plot(residue'), xlabel('No. of Samples'), ...
+    ylabel('Prediction Error'), title('Residue')
+
+% Estimating the click points
+% degraded = zeros(num_frames, frame_size);
+for i = 1 : num_frames
+    for j = 1 : frame_size
+        if abs(res(i, j)) > threshold_pt
+            degraded(i, j) = 1;
+        else
+            degraded(i, j) = 0;
+        end
+    end
+end
+degraded_pts = reshape(degraded', 1, [] );
+figure(3), 
+subplot(3, 1, 1), plot(input_deg), xlabel('No. of samples'), ...
+    ylabel ('Amplitude'), title('Input Signal with clicks')
+subplot(3, 1, 2), plot(residue'), xlabel('No. of Samples'), ...
+    ylabel('Prediction Error'), title('Residue')
+subplot(3, 1, 3), plot(degraded_pts'), xlabel('No. of Samples'), ...
+    ylabel(['|e|>', num2str(threshold_pt)] ), title('Error above Threshold')
+
+% Interpolating Data
+% restored2 = zeros(num_frames, frame_size);
+k = [];
+for i = 1 : num_frames
+    restored2(i, :) = interpolateAR(data_block(i, :), ...
+    degraded(i, :), coeffs(i, :), model_order);
+end
+output_wc = transpose(reshape(restored2', 1, [] ));
+% output_wc(:, 2) = output_wc(:, 1);
+figure(4),
+subplot(3, 1, 1), plot(input_ws), xlabel('No. of samples'), ...
+    ylabel ('Amplitude'), title('Input Signal with no clicks')
+subplot(3, 1, 2), plot(input_deg), xlabel('No. of samples'), ...
+    ylabel ('Amplitude'), title('Input Signal with clicks')
+subplot(3, 1, 3), plot(output_wc), xlabel('No. of samples'), ...
+    ylabel ('Amplitude'), title('Input Signal without clicks')
+audiowrite('output.wav', output_wc, Fs);
+
+outputplay = output_wc(1 : 10 * Fs);
+audiowrite('restored.wav', outputplay, Fs);
+
+
+% Calculating Mean Squared Error
+[R, C] = size(input_ws); 
+MSE = sum(((input_ws - output_wc) .^ 2) / (R * C));
+
+
